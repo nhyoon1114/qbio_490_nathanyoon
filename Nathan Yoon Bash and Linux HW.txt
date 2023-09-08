@@ -1,0 +1,30 @@
+Nathan Yoon Bash and Linux HW
+
+1. 
+pwd - "Print Working Directory". It prints the directory you are currently in.
+mkdir - "Make Directory". Takes further arguments, such as any options and a directory. It seems to make a new directory.
+cd <dir> - "Change Directory". Changes your current directory to the one specified.
+cd .. - Changes current directory to the "super-"directory above in which the current directory is located in.
+ls - "List". Lists all files and directories in the current directory.
+rm, -r - "Remove". Takes further arguments. Removes the directory or file. -r seems to recurse over all the files in the current directory, allowing removal of multiple files.
+scp - "Secure Copy". Takes further arguments; probably the file in question and a destination. Seems to be "scp <source> <dest>". Copies a file between two systems.
+nano - "Nano" seems to open a text editor of sorts.
+
+2. 
+Absolute: "cd /mnt/c/Users/Windows/Desktop"
+Relative: "cd Windows/Desktop"
+
+3. 
+"scp -r /mnt/c/Users/Windows/Desktop/Example Folder /mnt/c/Users/Windows/Documents/asdf"
+
+4. 
+I'd probably first "pwd" to see my current directory. I could then try "cd .." repeatedly until I find myself in /Users/Windows. After that, I might "ls" to see if Documents is in there (it should be), and finally "cd Documents" to go to /Documents.
+
+5.
+To create a new UNNAMED file I believe I would simply type "nano" in my current directory of choice.
+
+6.
+To save the file, I would first Ctrl-O to SAVE, after which I will be given a prompt to NAME the text file. I will name the file (e.g. <name>.txt) and it should be in the directory where I opened nano.
+
+7.
+Nano is best for making small changes to existing files (e.g. altering configurations) or writing small text files. Nothing big.
