@@ -1,0 +1,154 @@
+---
+title: "Intro to MAF"
+author: Nicole Black, Wade Boohar
+date: 07/17/22
+updated: 09/17/23
+---
+
+***Deliverables***
+-Upload this R Notebook to your GitHub and submit the link to your Repo on BB.
+-Include any graphs or figures created in this assignment in the folder with your R notebook with descriptive file names.
+
+Since this is an optional partner activity, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In MAF_Tutorial.Rmd, you looked at how to analyze mutation data in terms of clinical variables as well as mutation status. In this assignment, you will need to combine the two skills to demonstrate your understanding of categorical variables and R data structures.
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data .csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r}
+knitr::opts_knit$set(root.dir = normalizePath("C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data/")) 
+
+library(TCGAbiolinks)
+library(maftools)
+library(ggplot2)
+library(survival)
+library(survminer)
+
+clinical <- read.csv("C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data/brca_clinical_data.csv")
+colnames(clinical)[ colnames(clinical) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+write.csv(clinical, "C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data/brca_clinical_data.csv", row.names = FALSE)
+
+maf_query <- GDCquery(
+    project = "TCGA-BRCA", 
+    data.category = "Simple Nucleotide Variation", 
+    access = "open", # we only have access to somatic mutations which are open access
+    data.type = "Masked Somatic Mutation", 
+    workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query)
+
+maf_object <- read.maf(maf = maf,
+clinicalData = clinic,
+isTCGA = TRUE)
+
+```
+
+
+*1*
+Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+race_white_mask <- ifelse(maf_object@clinical.data$race == 'WHITE', T, F)
+white_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[race_white_mask]
+white_maf <- subsetMaf(maf = maf_object, tsb = white_patient_barcodes)
+
+race_nonwhite_mask <- !race_white_mask
+nonwhite_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[race_nonwhite_mask]
+nonwhite_maf <- subsetMaf(maf = maf_object, tsb = nonwhite_patient_barcodes)
+
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+```{r}
+
+coOncoplot(m1 = white_maf, m2 = nonwhite_maf, m1Name = "White Patients", m2Name = "Non-White Patients", borderCol = NA)
+
+ggsave("C:/Users/Windows/Desktop/qbio_490_nathanyoon/coOncoplot_white_nonwhite_BRCA.png")
+```
+2)
+The largest difference I see is in the TP53 gene with 31% of White patients having a mutation versus 41% of non-White patients with a mutation. TP53 codes for the P53 protein, which suppresses tumors. If this gene is mutated such that the P53 protein is no longer effective, then tumors will likely form. 
+
+Another difference I see is the PIK3CA mutation (36% of White, 29% of Non-White), which codes for the P110-alpha protein, which is a component of the PI3K enzyme. The PI3K signaling pathway affects cell proliferation, so it may make sense that a mutation for one of the components can affect cancer rates.
+
+"Non-White" encompasses many racial groups, so it is difficult for me to make a definite conclusion as to why there is a discrepancy between the two groups in these rates. One aspect to note is that these are the most common two mutations in both groups.
+
+Let's use TP53 going forward.
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+```{r}
+
+gene_TP53_maf <- subsetMaf(maf = maf_object, genes = "TP53")
+
+mut_pts_TP53 <- gene_TP53_maf@clinical.data$Tumor_Sample_Barcode
+num_pts_TP53 <- length(mut_pts_TP53)
+TP53_mask <- ifelse(maf_object@clinical.data$Tumor_Sample_Barcode %in%
+                    gene_TP53_maf@clinical.data$Tumor_Sample_Barcode, "TP53 mutant", "TP53 WT")
+
+Contingency_Table <- table(race_white_mask, TP53_mask)
+mosaicplot(Contingency_Table, xlab = "Patient's Race", ylab = "TP53 Type", sub = "TRUE if Patient is white, FALSE if Patient is not white")
+
+ggsave("C:/Users/Windows/Desktop/qbio_490_nathanyoon/TP53_Race_contig_BRCA.png")
+
+fisher_test <- fisher.test(Contingency_Table)
+
+fisher_test
+fisher_test$p.value
+  
+```
+3)
+Fisher's Test results:
+ODDS RATIO = 1.560483
+P-VALUE = 0.002580024
+
+An odds ratio of 1.56 means that patients have a 1.56x chance of having a TP53 mutation if the patient is not white than if the patient is white.
+
+The p-value of 0.00258 means that the probability that the odds ratio is equal to 1 (H0) is 0.00258. Since p-value < 0.05, it is likely that the null hypothesis is false and that there is indeed a significant difference these two populations.
+
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+```{r}
+
+lollipopPlot2(m1 = white_maf, m2 = nonwhite_maf, 
+              m1_name = "White Patients", m2_name = "Non-White Patients",
+              gene = "TP53")
+
+ggsave("C:/Users/Windows/Desktop/qbio_490_nathanyoon/lollipopPlot2_white_nonwhite_BRCA.png")
+
+
+```
+4) 
+Notes: The two lollipop plot ends seem to be largely symmetrical in terms of relative scale, which leads me to assume that the two groups are similar; i.e. there is no significant difference between white and non-white populations in TP53 mutation location. For example, both groups have large mutation incidences at 1/3 of the way in the TP53 gene. Splice sites seem to be the same across both groups.
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+```{r}
+
+maf_object@clinical.data$Overall_Survival_Status <- ifelse(maf_object@clinical.data$vital_status == "Alive", T, F)
+mafSurvival(maf = maf_object, 
+            genes = "TP53",
+            time = "last_contact_days_to",
+            Status = "Overall_Survival_Status",
+            isTCGA = TRUE)
+
+ggsave("C:/Users/Windows/Desktop/qbio_490_nathanyoon/mafSurvival_TP53_BRCA.png")
+
+```
+
+5)
+Looking back on the lectures, it seems that I chose the same TP53 gene as in Wade's recording.
+It seems that the blue (WT) and red (mutant) curves seem to be very similar, with a p-val of 0.904 and a near overlap between the curves. This leads me to believe there is no significant difference between survival rate of patients who do have a mutation in the TP53 gene and those who do not have a mutation in TP53.
+
+Combined with the lollipop plot, I think I can claim that patients with TP53 mutations versus those who do not have similar survival rates, and that TP53 mutation incidence between white and non-white patients are similar. Therefore, it seems that TP53 incidence is independent on race and survival rate is independent of TP53 mutation presence.
