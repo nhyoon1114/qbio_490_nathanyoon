@@ -1,0 +1,302 @@
+---
+title: "Nathan Yoon QBIO 490 R Review Project"
+output: html_notebook
+---
+
+PART 2: SKCM ANALYSIS
+
+
+```{r}
+#For CARC
+#knitr::opts_knit$set(root.dir = normalizePath("~/analysis_data/analysis_data"))
+#setwd("~/analysis_data/analysis_data")
+
+#For Local 
+knitr::opts_knit$set(root.dir = normalizePath("/Users/Windows/Desktop/qbio_490_nathanyoon/"))
+setwd("/Users/Windows/Desktop/qbio_490_nathanyoon/")
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+#BiocManager::install("maftools")
+
+if (!require(survival)) {
+  install.packages("survival")
+}
+
+if (!require(survminer)) {
+  install.packages("survminer")
+}
+
+if (!require(ggplot2)) {
+  install.packages("ggplot2")
+}
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(maftools)
+library(survival)
+library(survminer)
+```
+
+PREPARE CLINICAL DATA - this does not seem necessary
+
+```{r}
+
+# clin_query <- GDCquery(project = "TCGA-SKCM",
+#                        data.category = "Clinical",
+#                        data.type = "Clinical Supplement",
+#                        data.format = 'BCR Biotab')
+#   
+# GDCdownload(clin_query)
+# 
+# clinical.BCRtab.all <- GDCprepare(clin_query)
+# 
+# clinic <- clinical.BCRtab.all$clinical_patient_skcm[-c(1,2),]
+# 
+# colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+
+```
+
+PREPARE MAF DATA
+
+```{r}
+
+maf_query <- GDCquery(
+    project = "TCGA-SKCM", 
+    data.category = "Simple Nucleotide Variation", 
+    access = "open", 
+    data.type = "Masked Somatic Mutation", 
+    workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query)
+
+maf_object <- read.maf(maf = maf,
+clinicalData = rna_clinical,
+isTCGA = TRUE)
+```
+
+
+PREPARE RNA/TRANSCRIPTOME DATA
+
+```{r}
+rna_query <- GDCquery(project ="TCGA-SKCM",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+
+GDCdownload(rna_query)
+
+rna_se <- GDCprepare(rna_query)
+
+#rna_clinical dataframe contains rna_se colData
+rna_clinical <- rna_se@colData
+rna_clinical <- as.data.frame(rna_clinical)
+
+rna_clinical$Tumor_Sample_Barcode <- rna_clinical$patient
+
+```
+
+CREATING PLOTS
+
+1. Difference in survival between metastatic and non-metastatic patients
+```{r}
+
+#create a mask to remove all ageless patients
+age_NA_mask <- is.na(rna_clinical$age_at_diagnosis)
+cleaned_clinic <- rna_clinical[!age_NA_mask,]
+
+#create an age category, threshold being 55 years. age_at_diagnosis is in days so multiply by 365
+cleaned_clinic$age_category <- ifelse(cleaned_clinic$age_at_diagnosis < 55 * 365, "young", "old")
+
+#if they have an NA value, this means they have died. Either use days_to_death or follow_up depending on which
+cleaned_clinic$survival_time <- ifelse(cleaned_clinic$days_to_last_follow_up == "NA", cleaned_clinic$days_to_death, cleaned_clinic$days_to_last_follow_up)
+
+#convert values to numeric
+cleaned_clinic$survival_time <- as.numeric(cleaned_clinic$survival_time)
+
+#death_event is a boolean mask that checks if patient is dead or alive
+cleaned_clinic$death_event <- ifelse(cleaned_clinic$vital_status == "Dead", TRUE, FALSE)
+
+#create the Kaplan-Meier plot
+survival_object <- Surv(time = cleaned_clinic$survival_time,
+                        event = cleaned_clinic$death_event)
+
+fit_object <- survfit(survival_object ~ definition, data = cleaned_clinic)
+
+survplot <- ggsurvplot(fit_object,
+                       pval=TRUE,
+                       ggtheme = theme(plot.margin = unit(c(1,1,1,1), "cm")),
+                       legend = 'right')
+
+KM_plot <- survplot$plot + theme_bw() + 
+  theme(axis.title = element_text(size=20), 
+                     axis.text = element_text(size=16),
+                     legend.title = element_text(size=14),
+                     legend.text = element_text(size=12))
+
+KM_plot
+```
+
+
+2. Mutation Differences between metastatic and non-metastatic patients for multiple genes
+```{r}
+
+
+#create a maf for metastatic patients only
+metastatic_mask <- ifelse(maf_object@clinical.data$definition == 'Metastatic', T, F)
+metastatic_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[metastatic_mask]
+metastatic_maf <- subsetMaf(maf = maf_object, tsb = metastatic_patient_barcodes)
+
+#create a maf for non-metastatic patients only
+non_meta_mask <- !metastatic_mask
+non_meta_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[non_meta_mask]
+non_meta_maf <- subsetMaf(maf = maf_object, tsb = non_meta_patient_barcodes)
+
+#generate a coOncoplot comparing both metastatic and non-metastatic patients
+coOncoplot(m1 = metastatic_maf, m2 = non_meta_maf, m1Name = "Metastatic Patients", m2Name = "Non-Metastatic Patients", borderCol = NA)
+
+```
+
+3. Mutation Differences for specific gene of interest (one of most mutated genes)
+```{r}
+
+#We will be using PCLO gene (TTN was indecipherable)
+gene_PCLO_maf <- subsetMaf(maf = maf_object, genes = "PCLO")
+
+#create a mask for PCLO mutant or wild-type
+mut_pts_PCLO <- gene_PCLO_maf@clinical.data$Tumor_Sample_Barcode
+num_pts_PCLO <- length(mut_pts_PCLO)
+PCLO_mask <- ifelse(maf_object@clinical.data$Tumor_Sample_Barcode %in%
+                    gene_PCLO_maf@clinical.data$Tumor_Sample_Barcode, "PCLO mutant", "PCLO WT")
+
+#create a contigency table
+Contingency_Table_of_PCLO <- table(metastatic_mask, PCLO_mask)
+mosaicplot(Contingency_Table_of_PCLO, xlab = "Metastatic status", ylab = "PCLO Type")
+
+#conduct a Fisher test
+fisher_test <- fisher.test(Contingency_Table_of_PCLO)
+
+fisher_test
+fisher_test$p.value
+
+#create a colollipop plot
+lollipopPlot2(m1 = metastatic_maf, m2 = non_meta_maf, 
+              m1_name = "Metastatic Patients", m2_name = "Non-Metastatic Patients",
+              gene = "PCLO")
+```
+
+4. Cooccurrence or mutual exclusion of common gene mutations: one for metastatic patients, one for non-metastatic patients
+```{r}
+
+#create a cooccurrence plot for metastatic patients
+somaticInteractions(maf = metastatic_maf, top = 25, pvalue = c(0.002, 0.01))
+
+#create a cooccurrence plot for non-metastatic patients
+somaticInteractions(maf = non_meta_maf, top = 25, pvalue = c(0.002, 0.005))
+```
+
+
+5. Differential Expression between non-metastatic and metastatic controlling for treatment effects, race, gender, and vital status
+```{r}
+
+#get data for rna genes and rna counts
+rna_genes <- rna_se@rowRanges@elementMetadata
+rna_genes <- as.data.frame(rna_genes)
+
+rna_counts <- rna_se@assays@data$unstranded
+rna_counts <- as.data.frame(rna_counts)
+
+#make the row names for rna_genes and rna_counts legible
+rownames(rna_genes) <- rna_genes$gene_id
+rownames(rna_counts) <- rna_genes$gene_id
+colnames(rna_counts) <- rownames(rna_clinical)
+
+#clean up data for any NA values in definition
+def_na_mask <- !is.na(rna_clinical$definition)
+rna_clinical <- rna_clinical[def_na_mask,]
+rna_counts <- rna_counts[, def_na_mask]
+rna_clinical$definition <- factor(rna_clinical$definition)
+
+#clean up data for any rna counts below 20
+rm_low_count_mask <- ifelse(rowSums(rna_counts) >= 20, T, F)
+rna_counts <- rna_counts[rm_low_count_mask, ]
+
+#install DESeq2
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+#clean up data to control for age, create an age_category to turn age into categorical variables
+rna_clinical$age_category <- ifelse(rna_clinical$age_at_index <= 58, 'young', 'old')
+age_na_mask <- !is.na(rna_clinical$age_category)
+rna_clinical <- rna_clinical[age_na_mask,]
+rna_counts <- rna_counts[, age_na_mask]
+rna_clinical$age_category <- factor(rna_clinical$age_category)
+
+#clean up data to control for gender
+gender_na_mask <- !is.na(rna_clinical$gender)
+rna_clinical <- rna_clinical[gender_na_mask,]
+rna_counts <- rna_counts[, gender_na_mask]
+rna_clinical$gender <- factor(rna_clinical$gender)
+
+#clean up data to control for race
+race_na_mask <- !is.na(rna_clinical$race)
+rna_clinical <- rna_clinical[race_na_mask,]
+rna_counts <- rna_counts[, race_na_mask]
+rna_clinical$race <- factor(rna_clinical$race)
+
+#figure out which patients received which treatments - one-hot encoding
+rad <- clinical.BCRtab.all$clinical_radiation_skcm[-c(1,2),]
+drug <- clinical.BCRtab.all$clinical_drug_skcm[-c(1,2),]
+
+#treatment 1: radiation
+rna_clinical$treatment_rad <- ifelse(rna_clinical$patient %in% rad$bcr_patient_barcode, 1, 0)
+rna_clinical$treatment_rad <- factor(rna_clinical$treatment_rad)
+
+#treatment 2: chemotherapy
+chemo_mask <- (drug$pharmaceutical_therapy_type == "Chemotherapy")
+chemo_patient_list <- drug[chemo_mask,]
+rna_clinical$treatment_chemo <- ifelse(rna_clinical$patient %in% chemo_patient_list$bcr_patient_barcode, 1, 0)
+rna_clinical$treatment_chemo <- factor(rna_clinical$treatment_chemo)
+
+#treatment 3: immunotherapy
+immuno_mask <- (drug$pharmaceutical_therapy_type == "Immunotherapy")
+immuno_patient_list <- drug[immuno_mask,]
+rna_clinical$treatment_immuno <- ifelse(rna_clinical$patient %in% immuno_patient_list$bcr_patient_barcode, 1, 0)
+rna_clinical$treatment_immuno <- factor(rna_clinical$treatment_immuno)
+
+#treatment 4: molecular therapy
+molec_mask <- (drug$pharmaceutical_therapy_type == "Targeted Molecular therapy")
+molec_patient_list <- drug[molec_mask,]
+rna_clinical$treatment_molec <- ifelse(rna_clinical$patient %in% molec_patient_list$bcr_patient_barcode, 1, 0)
+rna_clinical$treatment_molec <- factor(rna_clinical$treatment_molec)
+
+#treatment 5: vaccine
+vaccine_mask <- (drug$pharmaceutical_therapy_type == "Vaccine")
+vaccine_patient_list <- drug[vaccine_mask,]
+rna_clinical$treatment_vaccine <- ifelse(rna_clinical$patient %in% vaccine_patient_list$bcr_patient_barcode, 1, 0)
+rna_clinical$treatment_vaccine <- factor(rna_clinical$treatment_vaccine)
+
+#perform a DESeq2
+dds <- DESeqDataSetFromMatrix(countData = rna_counts, colData = rna_clinical, design = ~treatment_rad + treatment_chemo + treatment_immuno + treatment_molec + treatment_vaccine + race + gender + vital_status + definition)
+
+dds_obj <- DESeq(dds)
+
+results <- results(dds_obj, format = "DataFrame", contrast = c("definition", "Metastatic", "Primary solid Tumor"))
+
+#create a volcano plot
+library(EnhancedVolcano)
+
+EnhancedVolcano(results,
+    lab = rownames(results),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    title = "Metastatic RNA counts in relation to Non-m. cts",
+    pointSize = 0.5,
+    labSize = 5.0)
+
+```
+
