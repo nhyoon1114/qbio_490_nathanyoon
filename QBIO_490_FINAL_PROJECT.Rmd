@@ -1,0 +1,286 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+#knitr::opts_knit$set(root.dir = normalizePath("C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data"))
+knitr::opts_knit$set(root.dir = normalizePath("~/analysis_data/analysis_data"))
+
+
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+library(survival)
+#library(survminer)
+library(ggplot2)
+
+BiocManager::install("DESeq2")
+library(DESeq2) 
+
+clin_query <- GDCquery(project = "TCGA-UCEC",
+                       data.category = "Clinical",
+                       data.type = "Clinical Supplement",
+                       data.format = 'BCR Biotab')
+
+GDCdownload(clin_query)
+
+```
+
+Prepare clinical data
+```{r}
+clinical.BCRtab.all <- GDCprepare(clin_query)
+
+clinical <- clinical.BCRtab.all$clinical_patient_ucec[-c(1,2),]
+
+colnames(clinical)[ colnames(clinical) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+
+#write.csv(clinical, "C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data/ucec_clinical_data.csv")
+write.csv(clinical, "~/analysis_data/ucec_clinical_data.csv", row.names = FALSE)
+
+#clinical <- read.csv("C:/Users/Windows/Desktop/qbio_490_nathanyoon/analysis_data/ucec_clinical_data.csv")
+clinical <- read.csv("~/analysis_data/ucec_clinical_data.csv")
+```
+
+
+The commented out lines create columns for BMI, age, race. They are left commented out as applying the mask would alter the population size in future analyses. 
+```{r}
+#table(clinical$menopause_status)
+#clinical$height_m_at_diagnosis <- as.numeric(clinical$height_cm_at_diagnosis) / 100
+#clinical$bmi <- as.numeric(clinical$weight_kg_at_diagnosis) / (clinical$height_m_at_diagnosis * clinical$height_m_at_diagnosis)
+
+# remove NA values
+#bmi_na_mask <- !is.na(clinical$bmi)
+#clinical <- clinical[bmi_na_mask, ]
+
+# remove patient 514 (the 213)
+#clinical <- clinical[c(1:513, 515:517),]
+
+# create category for BMI
+#clinical$bmi_group <- ifelse(clinical$bmi > 30, "HIGH", "LOW")
+
+# create category for age
+#age_na_mask <- !is.na(clinical$age_at_diagnosis)
+#clinical <- clinical[age_na_mask, ]
+#clinical$age_category <- ifelse(clinical$age_at_diagnosis > 60, "OLD", "YOUNG")
+
+# create category for race
+#race_na_mask <- !is.na(clinical$race)
+#clinical <- clinical[race_na_mask, ]
+#clinical$race_category <- ifelse(clinical$race == "BLACK OR AFRICAN AMERICAN", "BLACK", ifelse(clinical$race == "WHITE", "WHITE", "OTHER"))
+#clinical <- clinical[clinical$race_category != "OTHER", ]
+
+#clinical$hist <- ifelse(clinical$histologic_diagnosis == "Endometrioid endometrial adenocarcinoma", "ENDO", #ifelse(clinical$histologic_diagnosis == "Serous endometrial adenocarcinoma", "SER", "MIX"))
+
+```
+
+Menopause status was shown to have significant differences in survival.
+Pregnancy status was also created.
+This mask was NOT run for analysis 5 (DESeq)
+```{r}
+
+#create menopause category
+clinical$menopause <- ifelse(clinical$menopause_status == "Post (prior bilateral ovariectomy OR >12 mo since LMP with no prior hysterectomy)", "POST", ifelse(clinical$menopause_status == "Pre (<6 months since LMP AND no prior bilateral ovariectomy AND not on estrogen replacement)", "PRE", "OTHER"))
+menopause_na_mask <- ifelse(clinical$menopause == "OTHER", FALSE, TRUE)
+
+#sort out all patients with OTHER menopause values (unknown, PERI, etc)
+clinical <- clinical[menopause_na_mask,]
+
+```
+
+```{r}
+#create high/low pregnancy count category
+clinical$preg_category <- ifelse(clinical$pregnancies_full_term_count == "0" | clinical$pregnancies_full_term_count == "1" | clinical$pregnancies_full_term_count == "2", "LOW", ifelse(clinical$pregnancies_full_term_count == "3" | clinical$pregnancies_full_term_count == "4+", "HIGH", NA))
+
+#sort out all patients with NA pregnancy values *THIS WILL DRASTICALLY REDUCE SIZE OF POPULATION TO 43*
+#applying the preg_na_mask can drastically change analysis
+preg_na_mask <- !is.na(clinical$preg_category)
+clinical <- clinical[preg_na_mask,]
+```
+
+1. Clinical - creating KM survival plots depending on several factors (BMI, race, age, menopause status)
+```{r}
+clinical$death_event <- ifelse(clinical$vital_status == "Alive", FALSE, TRUE)
+
+clinical$survival <- ifelse(clinical$death_days_to == "[Not Applicable]", clinical$last_contact_days_to, clinical$death_days_to)
+clinical$survival <- as.numeric(clinical$survival)
+
+surv_NA_mask <- is.na(clinical$survival)
+
+clinical <- clinical[!surv_NA_mask,]
+```
+
+```{r}
+survival_object <- Surv(time = clinical$survival,
+                        event = clinical$death_event)
+
+# change survival plot depending on variable - menopause is chosen here as it yields most significant differences
+# bmi, race was also shown and measured
+fit_object <- survfit(survival_object ~ menopause, data = clinical)
+
+survplot <- ggsurvplot(fit_object,
+                       pval=TRUE,
+                       ggtheme = theme(plot.margin = unit(c(1,1,1,1), "cm")),
+                       legend = 'right')
+
+KM_plot <- survplot$plot + theme_bw() + 
+  theme(axis.title = element_text(size=20), 
+                     axis.text = element_text(size=16),
+                     legend.title = element_text(size=14),
+                     legend.text = element_text(size=12))
+
+KM_plot
+```
+
+2. Genomics - creating oncoplots
+```{r}
+# mutation data
+colnames(clinical)[ colnames(clinical) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+maf_query <- GDCquery(project = "TCGA-UCEC", data.category = "Simple Nucleotide Variation", access = "open", data.type = "Masked Somatic Mutation", workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking")
+#GDCdownload(maf_query)
+maf <- GDCprepare(maf_query)
+maf_object <- read.maf(maf = maf, clinicalData = clinical, isTCGA = TRUE)
+```
+
+Only menopause was factored in. Factoring pregnancy count as well drastically reduced size of population, making analyses much less powerful (e.g. pre-menopause group after pregnancy NA mask was N = 2.)
+```{r}
+#sort out patients pre- and post-menopause
+pre_meno_mask <- ifelse(maf_object@clinical.data$menopause == "PRE", T, F)
+pre_meno_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[pre_meno_mask]
+pre_meno_maf <- subsetMaf(maf = maf_object, tsb = pre_meno_patient_barcodes)
+
+post_meno_mask <- ifelse(maf_object@clinical.data$menopause == "POST", T, F)
+post_meno_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[post_meno_mask]
+post_meno_maf <- subsetMaf(maf = maf_object, tsb = post_meno_patient_barcodes)
+
+#create oncoplots of both pre- and post- menopause populations
+oncoplot(maf = pre_meno_maf)
+oncoplot(maf = post_meno_maf)
+
+```
+
+Same analysis as above, but only factoring in pregnancy:
+```{r}
+low_preg_mask <- ifelse(maf_object@clinical.data$preg_category == "LOW", T, F)
+low_preg_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[low_preg_mask]
+low_preg_maf <- subsetMaf(maf = maf_object, tsb = low_preg_patient_barcodes)
+
+high_preg_mask <- ifelse(maf_object@clinical.data$preg_category == "HIGH", T, F)
+high_preg_patient_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[high_preg_mask]
+high_preg_maf <- subsetMaf(maf = maf_object, tsb = high_preg_patient_barcodes)
+
+#create oncoplots of both pre- and post- menopause populations
+coOncoplot(m1 = low_preg_maf, m2 = high_preg_maf, m1Name = "<3 Pregnancy Patients", m2Name = ">= 3 Pregnancy Patients", borderCol = NA)
+
+oncoplot(low_preg_maf, top = 5)
+oncoplot(high_preg_maf, top = 5)
+```
+
+3. Create a box plot to check for significant difference in tumor invasion percent by pregnancy category 
+```{r}
+clinical$tumor_invasion_percent <- as.numeric(clinical$tumor_invasion_percent)
+tumor_na_mask <- !is.na(clinical$tumor_invasion_percent)
+clinical <- clinical[tumor_na_mask, ]
+
+tumor_percent_mask <- ifelse(clinical$tumor_invasion_percent <= 100, TRUE, FALSE)
+clinical <- clinical[tumor_percent_mask, ]
+
+boxplot(as.numeric(clinical$tumor_invasion_percent) ~ clinical$preg_category, xlab = "Pregnancy Category", ylab = "Tumor Invasion Percent")
+
+somaticInteractions(maf = high_preg_maf, top = 25)
+somaticInteractions(maf = low_preg_maf, top = 25)
+
+high_preg_pt <- clinical[high_preg_mask, ]
+low_preg_pt <- clinical[low_preg_mask,]
+
+t.test(x = low_preg_pt$tumor_invasion_percent, y = high_preg_pt$tumor_invasion_percent)
+
+```
+
+4. Conduct Fisher tests for most commonly mutated genes
+Replace "PTEN" with "TP53", "ARID1A", etc
+```{r}
+gene_PTEN_maf <- subsetMaf(maf = maf_object, genes = "PTEN")
+
+#create a mask for [gene] mutant or wild-type
+mut_pts_PTEN <- gene_PTEN_maf@clinical.data$Tumor_Sample_Barcode
+num_pts_PTEN <- length(mut_pts_PTEN)
+PTEN_mask <- ifelse(maf_object@clinical.data$Tumor_Sample_Barcode %in%
+                    gene_PTEN_maf@clinical.data$Tumor_Sample_Barcode, "PTEN mutant", "PTEN WT")
+
+#create a contingency table
+Contingency_Table_of_PTEN <- table(high_preg_mask, PTEN_mask)
+mosaicplot(Contingency_Table_of_PTEN, xlab = "Pregnancy Status", ylab = "PTEN Type")
+
+#conduct a Fisher test
+fisher_test <- fisher.test(Contingency_Table_of_PTEN)
+
+fisher_test
+fisher_test$p.value
+
+#create a colollipop plot
+lollipopPlot2(m1 = low_preg_maf, m2 = high_preg_maf, 
+              m1_name = "Low Pregnancy Patients", m2_name = "High Pregnancy Patients",
+              gene = "PTEN")
+```
+
+
+5. Transcriptomics - DESeq of genes in pregnancy 
+The menopause mask was NOT applied for this analysis
+```{r}
+#rna for transcriptomics
+rna_query <- GDCquery(project ="TCGA-UCEC", data.category = "Transcriptome Profiling", data.type = "Gene Expression Quantification", workflow.type = "STAR - Counts")
+GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query)
+```
+
+```{r}
+rna_genes <- rna_se@rowRanges@elementMetadata
+rna_genes <- as.data.frame(rna_genes)
+
+rna_counts <- rna_se@assays@data$unstranded
+rna_counts <- as.data.frame(rna_counts)
+
+#Tried to have the volcano plot show gene names instead of ID - did not succeed
+duplicate_mask <- !duplicated(rna_genes)
+rna_genes <- rna_genes[duplicate_mask, ]
+rna_counts <- rna_counts[duplicate_mask, ]
+
+rownames(rna_genes) <- rna_genes$gene_id
+rownames(rna_counts) <- rna_genes$gene_id
+colnames(rna_counts) <- rownames(clinical)
+
+col_na_mask <- !is.na(colnames(rna_counts))
+rna_counts <- rna_counts[, col_na_mask]
+
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(countData = rna_counts, colData = clinical, design = ~menopause + race + preg_category)
+
+dds_obj <- DESeq(dds)
+
+results <- results(dds_obj, format = "DataFrame", contrast = c("preg_category", "LOW", "HIGH"))
+
+#BiocManager::install("EnhancedVolcano")
+library(EnhancedVolcano)
+
+EnhancedVolcano(results,
+    lab = rownames(results),
+    x = 'log2FoldChange',
+    y = 'pvalue')
+
+```
+
+This code block sorts the DESeq results by significant log2FoldChange
+```{r}
+
+p_val_mask <- ifelse(results@listData$padj <= 0.05, TRUE, FALSE)
+
+df <- data.frame(results@rownames, results@listData$padj, results@listData$log2FoldChange)
+df <- df[p_val_mask, ]
+df <- df[!is.na(df$results.rownames), ]
+
+```
+
+
